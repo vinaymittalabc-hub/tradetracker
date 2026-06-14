@@ -1081,30 +1081,63 @@ async function startScan() {
 
 // ─── ANGEL ONE LOGIN ─────────────────────────────────
 async function loginAngelOne() {
-  const totpCode = generateTOTP(cfg.totp);
-  const res=await fetch('https://apiconnect.angelone.in/rest/auth/angelbroking/user/v1/loginByPassword',{
-    method:'POST',
-    headers:{'Content-Type':'application/json','Accept':'application/json','X-UserType':'USER','X-SourceID':'WEB','X-ClientLocalIP':'127.0.0.1','X-ClientPublicIP':'127.0.0.1','X-MACAddress':'00:00:00:00:00:00','X-PrivateKey':cfg.apiKey},
-    body:JSON.stringify({clientcode:cfg.clientId,password:cfg.pin,totp:totpCode})
-  });
-  const data=await res.json();
-  if(data.status&&data.data&&data.data.jwtToken) return data.data.jwtToken;
-  throw new Error(data.message||'Angel One login failed.');
+  const totpCode = await generateTOTP(cfg.totp);
+  // Use CORS proxy to bypass browser CORS restrictions on Angel One API
+  const PROXY = 'https://corsproxy.io/?';
+  const TARGET = 'https://apiconnect.angelone.in/rest/auth/angelbroking/user/v1/loginByPassword';
+  let data;
+  try {
+    const res = await fetch(PROXY + encodeURIComponent(TARGET), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'X-UserType': 'USER',
+        'X-SourceID': 'WEB',
+        'X-ClientLocalIP': '127.0.0.1',
+        'X-ClientPublicIP': '127.0.0.1',
+        'X-MACAddress': '00:00:00:00:00:00',
+        'X-PrivateKey': cfg.apiKey
+      },
+      body: JSON.stringify({ clientcode: cfg.clientId, password: cfg.pin, totp: totpCode })
+    });
+    data = await res.json();
+  } catch(e) {
+    throw new Error('Network error — check your internet connection and try again.');
+  }
+  if (data.status && data.data && data.data.jwtToken) return data.data.jwtToken;
+  throw new Error(data.message || 'Angel One login failed. Double-check API Key, Client ID, PIN and TOTP Secret.');
 }
 
 // ─── TOTP GENERATOR ──────────────────────────────────
-function generateTOTP(secret) {
+async function generateTOTP(secret) {
   try {
-    const b32='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-    let bits='';
-    for(let i=0;i<secret.length;i++){const v=b32.indexOf(secret[i].toUpperCase());if(v>=0)bits+=v.toString(2).padStart(5,'0');}
-    const bytes=[];
-    for(let i=0;i+8<=bits.length;i+=8)bytes.push(parseInt(bits.slice(i,i+8),2));
-    let epoch=Math.floor(Date.now()/1000/30);
-    const msg=new Uint8Array(8);
-    for(let i=7;i>=0;i--){msg[i]=epoch&0xff;epoch=Math.floor(epoch/256);}
-    return '000000';
-  } catch(e){return '000000';}
+    const b32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    const clean = secret.toUpperCase().replace(/=+$/, '').replace(/\s/g, '');
+    let bits = '';
+    for (let i = 0; i < clean.length; i++) {
+      const val = b32.indexOf(clean[i]);
+      if (val === -1) continue;
+      bits += val.toString(2).padStart(5, '0');
+    }
+    const keyBytes = new Uint8Array(Math.floor(bits.length / 8));
+    for (let i = 0; i < keyBytes.length; i++) {
+      keyBytes[i] = parseInt(bits.slice(i * 8, i * 8 + 8), 2);
+    }
+    const epoch = Math.floor(Date.now() / 1000 / 30);
+    const counter = new Uint8Array(8);
+    let tmp = epoch;
+    for (let i = 7; i >= 0; i--) { counter[i] = tmp & 0xff; tmp = Math.floor(tmp / 256); }
+    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+    const sig = await crypto.subtle.sign('HMAC', key, counter);
+    const hash = new Uint8Array(sig);
+    const offset = hash[hash.length - 1] & 0x0f;
+    const code = (((hash[offset] & 0x7f) << 24) | ((hash[offset+1] & 0xff) << 16) | ((hash[offset+2] & 0xff) << 8) | (hash[offset+3] & 0xff)) % 1000000;
+    return code.toString().padStart(6, '0');
+  } catch(e) {
+    console.error('TOTP error:', e);
+    throw new Error('TOTP generation failed. Check your TOTP Secret in Settings.');
+  }
 }
 
 // ─── FETCH CANDLES ───────────────────────────────────
@@ -1112,7 +1145,9 @@ async function fetchCandles(token,symboltoken) {
   const now=new Date();
   const to=now.toISOString().slice(0,16).replace('T',' ');
   const from=new Date(now-3*60*60*1000).toISOString().slice(0,16).replace('T',' ');
-  const res=await fetch('https://apiconnect.angelone.in/rest/secure/angelbroking/historical/v1/getCandleData',{
+  const PROXY='https://corsproxy.io/?';
+  const TARGET='https://apiconnect.angelone.in/rest/secure/angelbroking/historical/v1/getCandleData';
+  const res=await fetch(PROXY+encodeURIComponent(TARGET),{
     method:'POST',
     headers:{'Content-Type':'application/json','Accept':'application/json','Authorization':'Bearer '+token,'X-PrivateKey':cfg.apiKey,'X-UserType':'USER','X-SourceID':'WEB','X-ClientLocalIP':'127.0.0.1','X-ClientPublicIP':'127.0.0.1','X-MACAddress':'00:00:00:00:00:00'},
     body:JSON.stringify({exchange:'NSE',symboltoken,interval:'FIFTEEN_MINUTE',fromdate:from,todate:to})
