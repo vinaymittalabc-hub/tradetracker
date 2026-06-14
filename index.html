@@ -548,6 +548,9 @@ body.bg-neon #navbar,body.bg-neon #idx-bar,body.bg-neon .page{position:relative;
       <button class="snav-btn" onclick="showStab('market')" id="snav-market">
         <span class="snav-icon">🕐</span> Market Info
       </button>
+      <button class="snav-btn" onclick="showStab('backup')" id="snav-backup">
+        <span class="snav-icon">🔐</span> Backup
+      </button>
     </div>
 
     <!-- SETTINGS CONTENT -->
@@ -754,6 +757,62 @@ body.bg-neon #navbar,body.bg-neon #idx-bar,body.bg-neon .page{position:relative;
             <tr><td>Avoid trading</td><td>Last 15 mins (volatile)</td></tr>
             <tr><td>Max trades per day</td><td>3–5 (quality over quantity)</td></tr>
           </table>
+        </div>
+      </div>
+
+      <!-- ── BACKUP TAB ── -->
+      <div class="stab" id="stab-backup">
+        <div class="scard-wrap">
+          <h3>📤 Export Settings (Encrypted)</h3>
+          <p class="sdesc">Create an encrypted backup of all your settings. Share this code to any device to restore settings instantly. Only you can decrypt it with your password.</p>
+          <div class="frow">
+            <label>Set Export Password</label>
+            <div class="input-icon-wrap">
+              <input type="password" id="exp-pass" placeholder="Choose a strong password">
+              <button class="eye-btn" onclick="togglePass('exp-pass')">👁</button>
+            </div>
+            <div class="fhint">Remember this password — you will need it to import on other devices</div>
+          </div>
+          <button class="save-btn" onclick="exportSettings()" style="margin-top:.5rem;">🔐 Generate Encrypted Code</button>
+          <div id="export-result" style="display:none;margin-top:1rem;">
+            <div style="font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:600;">YOUR ENCRYPTED CODE — Copy this:</div>
+            <textarea id="export-code" readonly style="width:100%;background:var(--bg3);border:1px solid var(--green);border-radius:9px;color:var(--gl);padding:12px;font-size:11px;font-family:monospace;height:120px;resize:none;outline:none;"></textarea>
+            <button onclick="copyExportCode()" style="margin-top:8px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:8px 18px;border-radius:8px;cursor:pointer;font-size:13px;font-family:var(--font);width:100%;">📋 Copy Code</button>
+          </div>
+        </div>
+
+        <div class="scard-wrap">
+          <h3>📥 Import Settings (Restore)</h3>
+          <p class="sdesc">Paste your encrypted code below and enter your password to restore all settings on this device instantly.</p>
+          <div class="frow">
+            <label>Paste Encrypted Code</label>
+            <textarea id="imp-code" placeholder="Paste your encrypted code here..." style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:9px;color:var(--text);padding:12px;font-size:12px;font-family:monospace;height:100px;resize:none;outline:none;transition:border-color 0.15s;"></textarea>
+          </div>
+          <div class="frow">
+            <label>Enter Password</label>
+            <div class="input-icon-wrap">
+              <input type="password" id="imp-pass" placeholder="Password you used during export">
+              <button class="eye-btn" onclick="togglePass('imp-pass')">👁</button>
+            </div>
+          </div>
+          <button class="save-btn" onclick="importSettings()" style="margin-top:.5rem;">📥 Restore Settings</button>
+          <div id="import-msg" style="display:none;text-align:center;font-size:13px;margin-top:.75rem;font-weight:500;"></div>
+        </div>
+
+        <div class="scard-wrap">
+          <h3>📋 How to Use</h3>
+          <p class="sdesc">Step by step guide to move settings to another device.</p>
+          <table class="hours-table">
+            <tr><td>Step 1</td><td>On this device → set password → click Generate</td></tr>
+            <tr><td>Step 2</td><td>Copy the encrypted code</td></tr>
+            <tr><td>Step 3</td><td>Open site on your phone</td></tr>
+            <tr><td>Step 4</td><td>Go to Settings → Backup → Import</td></tr>
+            <tr><td>Step 5</td><td>Paste code + enter same password</td></tr>
+            <tr><td>Step 6</td><td>Click Restore — all settings load!</td></tr>
+          </table>
+          <div class="alert alert-blue" style="margin-top:1rem;font-size:12px;">
+            🔒 Your API keys are encrypted before export. Even if someone gets the code, they cannot read it without your password.
+          </div>
         </div>
       </div>
 
@@ -1110,6 +1169,70 @@ async function loginAngelOne() {
 }
 
 // ─── TOTP GENERATOR ──────────────────────────────────
+// ─── ENCRYPTION HELPERS ──────────────────────────────
+async function getEncryptionKey(password, salt) {
+  const enc = new TextEncoder();
+  const km = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name:'PBKDF2', salt, iterations:100000, hash:'SHA-256' },
+    km, { name:'AES-GCM', length:256 }, false, ['encrypt','decrypt']
+  );
+}
+async function encryptData(data, password) {
+  const enc = new TextEncoder();
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv   = crypto.getRandomValues(new Uint8Array(12));
+  const key  = await getEncryptionKey(password, salt);
+  const encrypted = await crypto.subtle.encrypt({name:'AES-GCM',iv}, key, enc.encode(JSON.stringify(data)));
+  const combined = new Uint8Array(16+12+encrypted.byteLength);
+  combined.set(salt,0); combined.set(iv,16); combined.set(new Uint8Array(encrypted),28);
+  return btoa(String.fromCharCode(...combined));
+}
+async function decryptData(base64, password) {
+  const combined = new Uint8Array(atob(base64).split('').map(c=>c.charCodeAt(0)));
+  const salt=combined.slice(0,16), iv=combined.slice(16,28), encrypted=combined.slice(28);
+  const key = await getEncryptionKey(password, salt);
+  const dec = await crypto.subtle.decrypt({name:'AES-GCM',iv}, key, encrypted);
+  return JSON.parse(new TextDecoder().decode(dec));
+}
+async function exportSettings() {
+  const pass = document.getElementById('exp-pass').value;
+  if(!pass||pass.length<4){showToast('Enter a password (min 4 characters)','error');return;}
+  const raw = localStorage.getItem('tr_cfg');
+  if(!raw){showToast('No settings found. Save settings first!','error');return;}
+  try {
+    const code = await encryptData(JSON.parse(raw), pass);
+    document.getElementById('export-code').value = code;
+    document.getElementById('export-result').style.display = 'block';
+    showToast('Encrypted code ready! Copy it now.');
+  } catch(e){showToast('Export failed: '+e.message,'error');}
+}
+function copyExportCode() {
+  const code = document.getElementById('export-code');
+  code.select(); document.execCommand('copy');
+  showToast('Code copied to clipboard!');
+}
+async function importSettings() {
+  const code = document.getElementById('imp-code').value.trim();
+  const pass = document.getElementById('imp-pass').value;
+  const msg  = document.getElementById('import-msg');
+  if(!code){showToast('Please paste your encrypted code','error');return;}
+  if(!pass){showToast('Please enter your password','error');return;}
+  try {
+    const data = await decryptData(code, pass);
+    localStorage.setItem('tr_cfg', JSON.stringify(data));
+    cfg = data; loadSettings(); updateProfileBar();
+    msg.style.display='block'; msg.style.color='var(--gl)';
+    msg.textContent='✅ Settings restored! All your details are loaded.';
+    showToast('Settings imported successfully!');
+    setTimeout(()=>{showPage('scanner');}, 2000);
+  } catch(e) {
+    msg.style.display='block'; msg.style.color='var(--rl)';
+    msg.textContent='❌ Wrong password or invalid code. Please try again.';
+    showToast('Import failed — wrong password or code','error');
+  }
+}
+
 async function generateTOTP(secret) {
   try {
     const b32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
